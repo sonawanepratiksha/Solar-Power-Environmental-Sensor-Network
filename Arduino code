@@ -1,0 +1,145 @@
+#include <ESP8266WiFi.h>
+#include <ESP8266WebServer.h>
+#include <DHT.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+// WiFi credentials
+const char* ssid = "your_ssid";
+const char* password = "your_password";
+
+// Pins and setup
+#define DHTPIN D4
+#define DHTTYPE DHT11
+#define LIGHT_DIGITAL D5
+#define MOISTURE_ANALOG A0
+
+DHT dht(DHTPIN, DHTTYPE);
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+ESP8266WebServer server(80);
+
+// Update LCD display
+void updateLCD(float temp, float hum, int moisture, bool light) {
+  int soilPercent = map(moisture, 1023, 0, 0, 100);
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("T:" + String(temp, 1) + "C H:" + String(hum, 1) + "%");
+  lcd.setCursor(0, 1);
+  lcd.print("S:" + String(soilPercent) + "% L:" + (light == HIGH ? "Low" : "High"));
+}
+
+// AJAX data endpoint
+void handleSensorData() {
+  float temp = dht.readTemperature();
+  float hum = dht.readHumidity();
+  int moisture = analogRead(MOISTURE_ANALOG);
+  bool light = digitalRead(LIGHT_DIGITAL);
+  int soilPercent = map(moisture, 1023, 0, 0, 100);
+  String lightStatus = (light == HIGH) ? "Low" : "High";
+
+  String json = "{";
+  json += "\"temp\":" + String(temp, 1) + ",";
+  json += "\"hum\":" + String(hum, 1) + ",";
+  json += "\"soil\":" + String(soilPercent) + ",";
+  json += "\"light\":\"" + lightStatus + "\"";
+  json += "}";
+
+  server.send(200, "application/json", json);
+}
+
+// Home redirect
+void handleRoot() {
+  server.sendHeader("Location", "/dashboard");
+  server.send(302, "text/plain", "");
+}
+
+// Web dashboard (Tailwind + Font Awesome + AJAX)
+void handleDashboard() {
+  String html = R"====(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sensor Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+  <script>
+    function fetchData() {
+      fetch('/data')
+        .then(res => res.json())
+        .then(data => {
+          document.getElementById('temp').innerText = data.temp + ' °C';
+          document.getElementById('hum').innerText = data.hum + ' %';
+          document.getElementById('soil').innerText = data.soil + ' %';
+          document.getElementById('light').innerText = data.light;
+        });
+    }
+    setInterval(fetchData, 5000);
+    window.onload = fetchData;
+  </script>
+</head>
+<body class="bg-gradient-to-br from-blue-100 to-green-100 min-h-screen p-6 text-gray-800">
+  <div class="text-center mb-8">
+    <h1 class="text-4xl font-bold text-blue-900 mb-2"><i class="fas fa-solar-panel"></i> Environmental Dashboard</h1>
+    <p class="text-lg text-gray-600">Real-time sensor values</p>
+  </div>
+  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 max-w-6xl mx-auto">
+    <div class="bg-white p-6 rounded-2xl shadow hover:shadow-xl transition">
+      <i class="fas fa-thermometer-half text-4xl text-red-500 mb-3"></i>
+      <h2 class="text-xl font-semibold">Temperature</h2>
+      <p id="temp" class="text-2xl font-bold mt-2">--</p>
+    </div>
+    <div class="bg-white p-6 rounded-2xl shadow hover:shadow-xl transition">
+      <i class="fas fa-tint text-4xl text-blue-500 mb-3"></i>
+      <h2 class="text-xl font-semibold">Humidity</h2>
+      <p id="hum" class="text-2xl font-bold mt-2">--</p>
+    </div>
+    <div class="bg-white p-6 rounded-2xl shadow hover:shadow-xl transition">
+      <i class="fas fa-seedling text-4xl text-green-600 mb-3"></i>
+      <h2 class="text-xl font-semibold">Soil Moisture</h2>
+      <p id="soil" class="text-2xl font-bold mt-2">--</p>
+    </div>
+    <div class="bg-white p-6 rounded-2xl shadow hover:shadow-xl transition">
+      <i class="fas fa-lightbulb text-4xl text-yellow-500 mb-3"></i>
+      <h2 class="text-xl font-semibold">Light</h2>
+      <p id="light" class="text-2xl font-bold mt-2">--</p>
+    </div>
+  </div>
+</body>
+</html>
+)====";
+  server.send(200, "text/html", html);
+}
+
+void setup() {
+  Serial.begin(9600);
+  dht.begin();
+  lcd.init();
+  lcd.backlight();
+  pinMode(LIGHT_DIGITAL, INPUT);
+
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nConnected. IP: " + WiFi.localIP().toString());
+
+  server.on("/", handleRoot);
+  server.on("/dashboard", handleDashboard);
+  server.on("/data", handleSensorData);
+  server.begin();
+}
+
+void loop() {
+  server.handleClient();
+
+  float temp = dht.readTemperature();
+  float hum = dht.readHumidity();
+  int moisture = analogRead(MOISTURE_ANALOG);
+  bool light = digitalRead(LIGHT_DIGITAL);
+  updateLCD(temp, hum, moisture, light);
+  delay(2000);
+}
